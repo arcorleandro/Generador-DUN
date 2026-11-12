@@ -24,12 +24,13 @@ const productsData = [
 ];
 
 // Global State
-let currentProduct1 = null;
-let currentProduct2 = null;
-let currentProduct3 = null;
+let queueItems = []; // Array of { uid, productId, date, qty }
+let itemCounter = 0;
+let currentPreviewPage = 0;
+let generatedLabelPages = [];
 let activeRenderEngine = 'vector';
 
-// Helper utilities for ZPL string escaping and barcode normalization
+// Helper utilities
 function escapeZPL(str) {
   if (!str) return '';
   return String(str)
@@ -43,11 +44,28 @@ function getCleanDun(dunStr) {
   return String(dunStr).replace(/\s+/g, '');
 }
 
-// DOM Elements References
-let productSelect1, productSelect2, productSelect3;
-let inputFecha1, inputFecha2, inputFecha3;
+function getZPLFontConfig(headText) {
+  if (!headText) return { h: 38, w: 38, x: 30, fb: 752 };
+  const len = headText.length;
+  // Long names (Ketchup Picante and Barbacoa La Campagnola) use compressed font
+  if (len > 38) {
+    return { h: 32, w: 24, x: 10, fb: 792 };
+  }
+  // All other standard product descriptions use a larger, more legible font size (40 dots)
+  return { h: 40, w: 40, x: 30, fb: 752 };
+}
+
+function validateDateString(dateStr) {
+  if (!dateStr || dateStr.trim().length !== 10) return false;
+  const regex = /^(0[1-9]|[12][0-9]|3[01])\/(0[1-9]|1[012])\/(19|20)\d\d$/;
+  return regex.test(dateStr.trim());
+}
+
+// DOM References
+let dynamicItemsContainer, totalDunsBadge, labelCountBadge;
 let zplOutputTextarea, labelaryImg, labelaryContainer, labelaryLoading, labelaryError;
 let simulatedLabel, btnGenerate, printerSelect, printerStatusBadge, printerStatusDot, printerStatusText;
+let previewPageIndicator, btnPrevLabel, btnNextLabel;
 
 // Toast Notification Utility
 function showToast(message, type = 'info') {
@@ -83,10 +101,8 @@ function showToast(message, type = 'info') {
   }, 4000);
 }
 
-// Smart Date Mask Formatter
-function setupDateMask(inputElement) {
-  if (!inputElement) return;
-
+// Attach Smart Date Mask to an input element
+function attachDateMask(inputElement, onUpdateCallback) {
   inputElement.addEventListener('keydown', function(e) {
     if (e.key === '/') {
       e.preventDefault();
@@ -111,147 +127,277 @@ function setupDateMask(inputElement) {
     }
     
     e.target.value = formatted;
-    updateZPLAndPreview();
+    if (onUpdateCallback) onUpdateCallback(formatted);
   });
 }
 
-// Populate Dropdown Menus
-function populateProductSelects() {
-  const selects = [productSelect1, productSelect2, productSelect3];
-  selects.forEach((select) => {
-    if (!select) return;
-    select.innerHTML = '';
-    productsData.forEach((prod) => {
-      const option = document.createElement('option');
-      option.value = prod.id;
-      option.textContent = `${prod.head} (${prod.head2})`;
-      select.appendChild(option);
+// Add a new product row to the dynamic queue (Default date = empty)
+function addQueueItem(productId = "10", date = "", qty = 1) {
+  itemCounter++;
+  const uid = itemCounter;
+
+  queueItems.push({
+    uid,
+    productId,
+    date,
+    qty
+  });
+
+  renderQueueItems();
+  updateZPLAndPreview();
+}
+
+// Remove a product row from the dynamic queue
+function removeQueueItem(uid) {
+  if (queueItems.length <= 1) {
+    showToast('Debe haber al menos un producto en la lista', 'warning');
+    return;
+  }
+  queueItems = queueItems.filter(item => item.uid !== uid);
+  renderQueueItems();
+  updateZPLAndPreview();
+}
+
+// Render all dynamic product rows in the left panel
+function renderQueueItems() {
+  dynamicItemsContainer.innerHTML = '';
+
+  queueItems.forEach((item, index) => {
+    const card = document.createElement('div');
+    card.className = 'p-3 bg-slate-50 dark:bg-slate-900/60 rounded-xl border border-slate-200 dark:border-slate-700/70 space-y-2.5 transition-all';
+
+    const optionsHtml = productsData.map(prod => {
+      const selected = prod.id === item.productId ? 'selected' : '';
+      return `<option value="${prod.id}" ${selected}>${prod.head} (${prod.head2})</option>`;
+    }).join('');
+
+    card.innerHTML = `
+      <div class="flex items-center justify-between">
+        <span class="text-[11px] font-bold uppercase tracking-wider text-brand-600 dark:text-brand-400">
+          Producto ${index + 1}
+        </span>
+        ${queueItems.length > 1 ? `
+          <button type="button" class="btn-remove-item text-xs text-slate-400 hover:text-rose-500 transition px-1" title="Eliminar producto">
+            <i class="fa-solid fa-trash-can"></i>
+          </button>
+        ` : ''}
+      </div>
+
+      <div>
+        <select class="item-product-select w-full p-2 text-xs bg-white dark:bg-slate-900 border border-slate-300 dark:border-slate-600 rounded-lg focus:ring-2 focus:ring-brand-500 outline-none font-medium text-slate-800 dark:text-slate-100 cursor-pointer">
+          ${optionsHtml}
+        </select>
+      </div>
+
+      <div class="grid grid-cols-12 gap-2.5">
+        <div class="col-span-7">
+          <label class="block text-[10px] font-semibold text-slate-500 dark:text-slate-400 mb-0.5">
+            <i class="fa-regular fa-calendar-check text-brand-500"></i> Fecha Vencimiento <span class="text-rose-500">*</span>
+          </label>
+          <input type="text" maxlength="10" placeholder="DD/MM/YYYY" value="${item.date}"
+            class="item-date-input w-full px-2.5 py-1.5 text-xs font-mono bg-white dark:bg-slate-900 border border-slate-300 dark:border-slate-600 rounded-lg focus:ring-2 focus:ring-brand-500 outline-none tracking-wider">
+        </div>
+        <div class="col-span-5">
+          <label class="block text-[10px] font-semibold text-slate-500 dark:text-slate-400 mb-0.5">
+            <i class="fa-solid fa-hashtag text-emerald-500"></i> Cant. DUNs
+          </label>
+          <input type="number" min="1" max="999" value="${item.qty}"
+            class="item-qty-input w-full px-2.5 py-1.5 text-xs font-mono font-bold bg-white dark:bg-slate-900 border border-slate-300 dark:border-slate-600 rounded-lg focus:ring-2 focus:ring-brand-500 outline-none text-emerald-600 dark:text-emerald-400">
+        </div>
+      </div>
+    `;
+
+    const selectEl = card.querySelector('.item-product-select');
+    const dateEl = card.querySelector('.item-date-input');
+    const qtyEl = card.querySelector('.item-qty-input');
+    const removeBtn = card.querySelector('.btn-remove-item');
+
+    selectEl.addEventListener('change', (e) => {
+      item.productId = e.target.value;
+      updateZPLAndPreview();
     });
+
+    attachDateMask(dateEl, (newVal) => {
+      item.date = newVal;
+      updateZPLAndPreview();
+    });
+
+    qtyEl.addEventListener('input', (e) => {
+      const val = parseInt(e.target.value, 10);
+      item.qty = isNaN(val) || val < 1 ? 1 : val;
+      updateZPLAndPreview();
+    });
+
+    if (removeBtn) {
+      removeBtn.addEventListener('click', () => removeQueueItem(item.uid));
+    }
+
+    dynamicItemsContainer.appendChild(card);
   });
-
-  // Set default initial selections
-  if (productSelect1 && productsData[9]) productSelect1.value = productsData[9].id; // NOEL Pomarola
-  if (productSelect2 && productsData[20]) productSelect2.value = productsData[20].id; // Ketchup Americano
-  if (productSelect3 && productsData[20]) productSelect3.value = productsData[20].id; // Ketchup Americano
-
-  currentProduct1 = productsData.find(p => p.id === productSelect1.value) || productsData[0];
-  currentProduct2 = productsData.find(p => p.id === productSelect2.value) || productsData[0];
-  currentProduct3 = productsData.find(p => p.id === productSelect3.value) || productsData[0];
 }
 
-// Generate ZPL String using exact specified structure and Y coordinates
-function generateZPLCode() {
-  const p1 = currentProduct1 || productsData[0];
-  const p2 = currentProduct2 || productsData[0];
-  const p3 = currentProduct3 || productsData[0];
+function buildLabelPages() {
+  const flatDuns = [];
+  queueItems.forEach(item => {
+    const product = productsData.find(p => p.id === item.productId) || productsData[0];
+    const date = item.date.trim() || '--/--/----';
+    const count = Math.max(1, parseInt(item.qty, 10) || 1);
 
-  const f1 = inputFecha1.value.trim() || '--/--/----';
-  const f2 = inputFecha2.value.trim() || '--/--/----';
-  const f3 = inputFecha3.value.trim() || '--/--/----';
+    for (let i = 0; i < count; i++) {
+      flatDuns.push({ product, date });
+    }
+  });
 
-  const dun1Clean = getCleanDun(p1.dun);
-  const dun2Clean = getCleanDun(p2.dun);
-  const dun3Clean = getCleanDun(p3.dun);
+  const pages = [];
+  for (let i = 0; i < flatDuns.length; i += 3) {
+    pages.push(flatDuns.slice(i, i + 3));
+  }
+  return { flatDuns, pages };
+}
 
-  return `^XA
+function generateSingleLabelZPL(slots) {
+  const s1 = slots[0];
+  const s2 = slots[1];
+  const s3 = slots[2];
+
+  const dun1Clean = getCleanDun(s1.product.dun);
+  const cfg1 = getZPLFontConfig(s1.product.head);
+
+  let zpl = `^XA
 ^PW812
 ^LL1218
-^COMMENT ${p1.logo}^FS
-^FO30,110^CI28^A0N,36,36^FB752,2,0,C,0^FD${escapeZPL(p1.head)}^FS
-^FO30,150^A0N,32,32^FB752,1,0,C,0^FD${escapeZPL(p1.head2)}^FS
+^COMMENT ${s1.product.logo}^FS
+^FO${cfg1.x},105^CI28^A0N,${cfg1.h},${cfg1.w}^FB${cfg1.fb},2,0,C,0^FD${escapeZPL(s1.product.head)}^FS
+^FO30,150^A0N,32,32^FB752,1,0,C,0^FD${escapeZPL(s1.product.head2)}^FS
 ^BY6,3,130
 ^FO60,200^BB8,130,Y,N,N^FD${dun1Clean}^FS
-^FO30,350^A0N,30,30^FB752,1,0,C,0^FD${p1.dun}^FS
-^FO30,380^A0N,36,36^FB692,1,0,R,0^FDL ${f1}^FS
+^FO30,350^A0N,30,30^FB752,1,0,C,0^FD${s1.product.dun}^FS
+^FO30,380^A0N,36,36^FB692,1,0,R,0^FDL ${s1.date}^FS`;
+
+  if (s2) {
+    const dun2Clean = getCleanDun(s2.product.dun);
+    const cfg2 = getZPLFontConfig(s2.product.head);
+    zpl += `
 ^FO30,430^GB752,4,4^FS
-^COMMENT ${p2.logo}^FS
-^FO30,460^A0N,36,36^FB752,2,0,C,0^FD${escapeZPL(p2.head)}^FS
-^FO30,500^A0N,32,32^FB752,1,0,C,0^FD${escapeZPL(p2.head2)}^FS
+^COMMENT ${s2.product.logo}^FS
+^FO${cfg2.x},455^A0N,${cfg2.h},${cfg2.w}^FB${cfg2.fb},2,0,C,0^FD${escapeZPL(s2.product.head)}^FS
+^FO30,500^A0N,32,32^FB752,1,0,C,0^FD${escapeZPL(s2.product.head2)}^FS
 ^BY6,3,130
 ^FO60,550^BB8,130,Y,N,N^FD${dun2Clean}^FS
-^FO30,700^A0N,30,30^FB752,1,0,C,0^FD${p2.dun}^FS
-^FO30,730^A0N,36,36^FB692,1,0,R,0^FDL ${f2}^FS
+^FO30,700^A0N,30,30^FB752,1,0,C,0^FD${s2.product.dun}^FS
+^FO30,730^A0N,36,36^FB692,1,0,R,0^FDL ${s2.date}^FS`;
+  }
+
+  if (s3) {
+    const dun3Clean = getCleanDun(s3.product.dun);
+    const cfg3 = getZPLFontConfig(s3.product.head);
+    zpl += `
 ^FO30,780^GB752,4,4^FS
-^COMMENT ${p3.logo}^FS
-^FO30,810^A0N,36,36^FB752,2,0,C,0^FD${escapeZPL(p3.head)}^FS
-^FO30,850^A0N,32,32^FB752,1,0,C,0^FD${escapeZPL(p3.head2)}^FS
+^COMMENT ${s3.product.logo}^FS
+^FO${cfg3.x},805^A0N,${cfg3.h},${cfg3.w}^FB${cfg3.fb},2,0,C,0^FD${escapeZPL(s3.product.head)}^FS
+^FO30,850^A0N,32,32^FB752,1,0,C,0^FD${escapeZPL(s3.product.head2)}^FS
 ^BY6,3,130
 ^FO60,900^BB8,130,Y,N,N^FD${dun3Clean}^FS
-^FO30,1050^A0N,30,30^FB752,1,0,C,0^FD${p3.dun}^FS
-^FO30,1080^A0N,36,36^FB692,1,0,R,0^FDL ${f3}^FS
-^XZ`;
+^FO30,1050^A0N,30,30^FB752,1,0,C,0^FD${s3.product.dun}^FS
+^FO30,1080^A0N,36,36^FB692,1,0,R,0^FDL ${s3.date}^FS`;
+  }
+
+  zpl += `\n^XZ`;
+  return zpl;
 }
 
-// Update Simulated Vector SVG & HTML UI
-function updateSimulatedLabel() {
-  const p1 = currentProduct1;
-  const p2 = currentProduct2;
-  const p3 = currentProduct3;
+function generateFullZPLCode() {
+  return generatedLabelPages.map(pageSlots => generateSingleLabelZPL(pageSlots)).join('\n');
+}
 
-  const f1 = inputFecha1.value.trim() || '--/--/----';
-  const f2 = inputFecha2.value.trim() || '--/--/----';
-  const f3 = inputFecha3.value.trim() || '--/--/----';
+function updateSimulatedLabel() {
+  if (generatedLabelPages.length === 0) return;
+
+  if (currentPreviewPage >= generatedLabelPages.length) {
+    currentPreviewPage = generatedLabelPages.length - 1;
+  }
+  if (currentPreviewPage < 0) currentPreviewPage = 0;
+
+  const pageSlots = generatedLabelPages[currentPreviewPage];
+
+  previewPageIndicator.textContent = `${currentPreviewPage + 1} / ${generatedLabelPages.length}`;
+  btnPrevLabel.disabled = currentPreviewPage === 0;
+  btnNextLabel.disabled = currentPreviewPage >= generatedLabelPages.length - 1;
+
+  const adjustTextSize = (elemId, text) => {
+    const elem = document.getElementById(elemId);
+    if (!elem) return;
+    elem.textContent = text;
+    if (text.length > 38) {
+      elem.className = "font-bold text-[9.5px] tracking-tight leading-tight text-black uppercase whitespace-nowrap overflow-hidden";
+    } else {
+      elem.className = "font-bold text-[11.5px] leading-tight text-black uppercase break-words max-h-8 overflow-hidden";
+    }
+  };
 
   // Section 1
-  document.getElementById('lbl-head').textContent = p1.head;
-  document.getElementById('lbl-head2').textContent = p1.head2;
-  document.getElementById('lbl-dun').textContent = p1.dun;
-  document.getElementById('lbl-lote').textContent = `L ${f1}`;
+  const s1 = pageSlots[0];
+  adjustTextSize('lbl-head', s1.product.head);
+  document.getElementById('lbl-head2').textContent = s1.product.head2;
+  document.getElementById('lbl-dun').textContent = s1.product.dun;
+  document.getElementById('lbl-lote').textContent = `L ${s1.date}`;
   try {
-    JsBarcode("#barcode-svg", getCleanDun(p1.dun), {
-      format: "ITF14",
-      width: 1.8,
-      height: 38,
-      displayValue: false,
-      margin: 0
-    });
+    JsBarcode("#barcode-svg", getCleanDun(s1.product.dun), { format: "ITF14", width: 1.8, height: 35, displayValue: false, margin: 0 });
   } catch (e) {
-    JsBarcode("#barcode-svg", getCleanDun(p1.dun), { format: "CODE128", width: 1.5, height: 38, displayValue: false, margin: 0 });
+    JsBarcode("#barcode-svg", getCleanDun(s1.product.dun), { format: "CODE128", width: 1.5, height: 35, displayValue: false, margin: 0 });
   }
 
   // Section 2
-  document.getElementById('lbl-head-2').textContent = p2.head;
-  document.getElementById('lbl-head2-2').textContent = p2.head2;
-  document.getElementById('lbl-dun-2').textContent = p2.dun;
-  document.getElementById('lbl-lote-2').textContent = `L ${f2}`;
-  try {
-    JsBarcode("#barcode-svg-2", getCleanDun(p2.dun), {
-      format: "ITF14",
-      width: 1.8,
-      height: 38,
-      displayValue: false,
-      margin: 0
-    });
-  } catch (e) {
-    JsBarcode("#barcode-svg-2", getCleanDun(p2.dun), { format: "CODE128", width: 1.5, height: 38, displayValue: false, margin: 0 });
+  const sec2 = document.getElementById('sim-section-2');
+  const div1 = document.getElementById('sim-divider-1');
+  if (pageSlots[1]) {
+    sec2.classList.remove('invisible');
+    div1.classList.remove('invisible');
+    const s2 = pageSlots[1];
+    adjustTextSize('lbl-head-2', s2.product.head);
+    document.getElementById('lbl-head2-2').textContent = s2.product.head2;
+    document.getElementById('lbl-dun-2').textContent = s2.product.dun;
+    document.getElementById('lbl-lote-2').textContent = `L ${s2.date}`;
+    try {
+      JsBarcode("#barcode-svg-2", getCleanDun(s2.product.dun), { format: "ITF14", width: 1.8, height: 35, displayValue: false, margin: 0 });
+    } catch (e) {
+      JsBarcode("#barcode-svg-2", getCleanDun(s2.product.dun), { format: "CODE128", width: 1.5, height: 35, displayValue: false, margin: 0 });
+    }
+  } else {
+    sec2.classList.add('invisible');
+    div1.classList.add('invisible');
   }
 
   // Section 3
-  document.getElementById('lbl-head-3').textContent = p3.head;
-  document.getElementById('lbl-head2-3').textContent = p3.head2;
-  document.getElementById('lbl-dun-3').textContent = p3.dun;
-  document.getElementById('lbl-lote-3').textContent = `L ${f3}`;
-  try {
-    JsBarcode("#barcode-svg-3", getCleanDun(p3.dun), {
-      format: "ITF14",
-      width: 1.8,
-      height: 38,
-      displayValue: false,
-      margin: 0
-    });
-  } catch (e) {
-    JsBarcode("#barcode-svg-3", getCleanDun(p3.dun), { format: "CODE128", width: 1.5, height: 38, displayValue: false, margin: 0 });
+  const sec3 = document.getElementById('sim-section-3');
+  const div2 = document.getElementById('sim-divider-2');
+  if (pageSlots[2]) {
+    sec3.classList.remove('invisible');
+    div2.classList.remove('invisible');
+    const s3 = pageSlots[2];
+    adjustTextSize('lbl-head-3', s3.product.head);
+    document.getElementById('lbl-head2-3').textContent = s3.product.head2;
+    document.getElementById('lbl-dun-3').textContent = s3.product.dun;
+    document.getElementById('lbl-lote-3').textContent = `L ${s3.date}`;
+    try {
+      JsBarcode("#barcode-svg-3", getCleanDun(s3.product.dun), { format: "ITF14", width: 1.8, height: 35, displayValue: false, margin: 0 });
+    } catch (e) {
+      JsBarcode("#barcode-svg-3", getCleanDun(s3.product.dun), { format: "CODE128", width: 1.5, height: 35, displayValue: false, margin: 0 });
+    }
+  } else {
+    sec3.classList.add('invisible');
+    div2.classList.add('invisible');
   }
 }
 
-// Call Labelary API for real Zebra raster preview
-function updateLabelaryPreview(zplCode) {
-  if (activeRenderEngine !== 'labelary') return;
+function updateLabelaryPreview() {
+  if (activeRenderEngine !== 'labelary' || generatedLabelPages.length === 0) return;
 
   labelaryLoading.classList.remove('hidden');
   labelaryImg.classList.add('hidden');
   labelaryError.classList.add('hidden');
 
+  const pageZPL = generateSingleLabelZPL(generatedLabelPages[currentPreviewPage]);
   const url = `https://api.labelary.com/v1/printers/8dpmm/labels/4x6/0/`;
   
   fetch(url, {
@@ -260,7 +406,7 @@ function updateLabelaryPreview(zplCode) {
       'Accept': 'image/png',
       'Content-Type': 'application/x-www-form-urlencoded'
     },
-    body: zplCode
+    body: pageZPL
   })
   .then(response => {
     if (!response.ok) throw new Error('Respuesta de API Labelary no válida');
@@ -279,19 +425,23 @@ function updateLabelaryPreview(zplCode) {
   });
 }
 
-// Refresh all UI elements
 function updateZPLAndPreview() {
-  const zplCode = generateZPLCode();
-  if (zplOutputTextarea) zplOutputTextarea.value = zplCode;
+  const { flatDuns, pages } = buildLabelPages();
+  generatedLabelPages = pages;
+
+  totalDunsBadge.textContent = `${flatDuns.length} DUN${flatDuns.length !== 1 ? 's' : ''}`;
+  labelCountBadge.textContent = `${pages.length} etiqueta${pages.length !== 1 ? 's' : ''}`;
+
+  const fullZpl = generateFullZPLCode();
+  if (zplOutputTextarea) zplOutputTextarea.value = fullZpl;
   
   const charCountElem = document.getElementById('zpl-char-count');
-  if (charCountElem) charCountElem.textContent = `${zplCode.length} caracteres`;
+  if (charCountElem) charCountElem.textContent = `${fullZpl.length} caracteres`;
 
   updateSimulatedLabel();
-  updateLabelaryPreview(zplCode);
+  updateLabelaryPreview();
 }
 
-// Check real printer connection status with network fetch timeout
 async function checkPrinterConnection() {
   const ip = printerSelect.value;
   printerStatusText.textContent = 'Verificando...';
@@ -320,13 +470,27 @@ async function checkPrinterConnection() {
   }
 }
 
-// Direct HTTP Raw Print to Zebra Printer
+// Check all items have valid dates before printing
+function checkDatesValidity() {
+  for (let i = 0; i < queueItems.length; i++) {
+    const item = queueItems[i];
+    if (!validateDateString(item.date)) {
+      showToast(`Por favor ingrese una fecha válida (DD/MM/YYYY) para el Producto ${i + 1}`, 'error');
+      return false;
+    }
+  }
+  return true;
+}
+
 function printDirectToZebra() {
-  const zplData = generateZPLCode();
+  if (!checkDatesValidity()) return;
+
+  const zplData = generateFullZPLCode();
   const targetIP = printerSelect.value;
   const printerName = printerSelect.options[printerSelect.selectedIndex].text;
+  const totalLabels = generatedLabelPages.length;
 
-  showToast(`Enviando trabajo de impresión ZPL a ${printerName}...`, 'info');
+  showToast(`Enviando ${totalLabels} etiqueta(s) a ${printerName}...`, 'info');
 
   fetch(`http://${targetIP}/pstprnt`, {
     method: 'POST',
@@ -337,24 +501,19 @@ function printDirectToZebra() {
     body: zplData
   })
   .then(() => {
-    showToast(`¡Comando de impresión enviado con éxito a ${printerName}!`, 'success');
+    showToast(`¡Impresión de ${totalLabels} etiqueta(s) enviada con éxito a ${printerName}!`, 'success');
   })
   .catch((err) => {
-    console.warn('Envió no-cors realizado o error de puerto:', err);
-    showToast(`Impresión enviada a ${printerName} (${targetIP}). Compruebe la salida de la impresora.`, 'success');
+    console.warn('Envío realizado:', err);
+    showToast(`Impresión enviada a ${printerName} (${targetIP}).`, 'success');
   });
 }
 
 // Initialize application on DOM load
 document.addEventListener('DOMContentLoaded', () => {
-  // DOM Elements
-  productSelect1 = document.getElementById('product-select');
-  productSelect2 = document.getElementById('product-select-2');
-  productSelect3 = document.getElementById('product-select-3');
-
-  inputFecha1 = document.getElementById('input-fecha');
-  inputFecha2 = document.getElementById('input-fecha-2');
-  inputFecha3 = document.getElementById('input-fecha-3');
+  dynamicItemsContainer = document.getElementById('dynamic-items-container');
+  totalDunsBadge = document.getElementById('total-duns-badge');
+  labelCountBadge = document.getElementById('label-count-badge');
 
   zplOutputTextarea = document.getElementById('zpl-output');
   simulatedLabel = document.getElementById('simulated-label');
@@ -368,56 +527,31 @@ document.addEventListener('DOMContentLoaded', () => {
   printerStatusDot = document.getElementById('printer-status-dot');
   printerStatusText = document.getElementById('printer-status-text');
 
-  // Populate Select Options
-  populateProductSelects();
+  previewPageIndicator = document.getElementById('preview-page-indicator');
+  btnPrevLabel = document.getElementById('btn-prev-label');
+  btnNextLabel = document.getElementById('btn-next-label');
 
-  // Mask Date Inputs
-  setupDateMask(inputFecha1);
-  setupDateMask(inputFecha2);
-  setupDateMask(inputFecha3);
-
-  // Default Expiration Date (Default: 2 years from today)
-  const now = new Date();
-  now.setFullYear(now.getFullYear() + 2);
-  const day = String(now.getDate()).padStart(2, '0');
-  const month = String(now.getMonth() + 1).padStart(2, '0');
-  const defaultDate = `${day}/${month}/${now.getFullYear()}`;
-
-  inputFecha1.value = defaultDate;
-  inputFecha2.value = defaultDate;
-  inputFecha3.value = defaultDate;
-
-  // Event Listeners for Product Selection
-  productSelect1.addEventListener('change', (e) => {
-    currentProduct1 = productsData.find(p => p.id === e.target.value);
-    updateZPLAndPreview();
+  // Add Item Button (Default date empty)
+  document.getElementById('btn-add-item').addEventListener('click', () => {
+    addQueueItem("10", "", 1);
+    dynamicItemsContainer.scrollTop = dynamicItemsContainer.scrollHeight;
   });
 
-  productSelect2.addEventListener('change', (e) => {
-    currentProduct2 = productsData.find(p => p.id === e.target.value);
-    updateZPLAndPreview();
+  // Preview Pagination Controls
+  btnPrevLabel.addEventListener('click', () => {
+    if (currentPreviewPage > 0) {
+      currentPreviewPage--;
+      updateSimulatedLabel();
+      updateLabelaryPreview();
+    }
   });
 
-  productSelect3.addEventListener('change', (e) => {
-    currentProduct3 = productsData.find(p => p.id === e.target.value);
-    updateZPLAndPreview();
-  });
-
-  // Copy Product 1 Shortcuts
-  document.getElementById('btn-copy-prod1-to-2').addEventListener('click', () => {
-    productSelect2.value = productSelect1.value;
-    currentProduct2 = currentProduct1;
-    inputFecha2.value = inputFecha1.value;
-    updateZPLAndPreview();
-    showToast('Producto 1 copiado a Sección 2', 'info');
-  });
-
-  document.getElementById('btn-copy-prod1-to-3').addEventListener('click', () => {
-    productSelect3.value = productSelect1.value;
-    currentProduct3 = currentProduct1;
-    inputFecha3.value = inputFecha1.value;
-    updateZPLAndPreview();
-    showToast('Producto 1 copiado a Sección 3', 'info');
+  btnNextLabel.addEventListener('click', () => {
+    if (currentPreviewPage < generatedLabelPages.length - 1) {
+      currentPreviewPage++;
+      updateSimulatedLabel();
+      updateLabelaryPreview();
+    }
   });
 
   // Printer Selection Change
@@ -428,6 +562,8 @@ document.addEventListener('DOMContentLoaded', () => {
 
   // Copy ZPL Code Button
   document.getElementById('btn-copy-zpl').addEventListener('click', () => {
+    if (!checkDatesValidity()) return;
+
     const text = zplOutputTextarea.value;
     const textArea = document.createElement("textarea");
     textArea.value = text;
@@ -440,6 +576,12 @@ document.addEventListener('DOMContentLoaded', () => {
       showToast('Error al copiar el código ZPL', 'error');
     }
     document.body.removeChild(textArea);
+  });
+
+  // Refresh Labelary Button
+  document.getElementById('btn-refresh-labelary').addEventListener('click', () => {
+    updateLabelaryPreview();
+    showToast('Vista previa actualizada', 'info');
   });
 
   // Render Engine Switcher
@@ -457,7 +599,7 @@ document.addEventListener('DOMContentLoaded', () => {
     document.getElementById('render-mode-vector').className = 'px-2.5 py-1 rounded bg-slate-200 dark:bg-slate-700 text-slate-800 dark:text-slate-200 font-medium hover:bg-slate-300';
     simulatedLabel.classList.add('hidden');
     labelaryContainer.classList.remove('hidden');
-    updateLabelaryPreview(generateZPLCode());
+    updateLabelaryPreview();
   });
 
   // Tab Switchers
@@ -498,7 +640,7 @@ document.addEventListener('DOMContentLoaded', () => {
     document.documentElement.classList.toggle('dark');
   });
 
-  // Initial Call to Build Label
-  updateZPLAndPreview();
+  // Initialize with empty expiration date
+  addQueueItem("15", "", 1);
   checkPrinterConnection();
 });
