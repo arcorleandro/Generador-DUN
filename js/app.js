@@ -249,12 +249,14 @@ function renderQueueItems() {
 }
 
 // Always build the queue strictly following Producto 1 -> Producto 2 -> Producto N
-// Each product starts on a clean label sheet so different products never mix on the same label
+// If total DUNs > 9, each product starts on a clean label sheet so different products never mix.
+// If total DUNs <= 9, they are packed continuously in groups of 3 to save label sheets.
 function buildLabelPages() {
-  const pages = [];
-  let totalDuns = 0;
   const cards = dynamicItemsContainer.querySelectorAll('.queue-item-card');
+  const parsedItems = [];
+  let totalDuns = 0;
 
+  // First pass: sync DOM values and calculate total DUNs
   cards.forEach(card => {
     const uid = parseInt(card.dataset.uid, 10);
     const item = queueItems.find(q => q.uid === uid);
@@ -272,17 +274,35 @@ function buildLabelPages() {
     const product = productsData.find(p => p.id === item.productId) || productsData[0];
     const date = item.date.trim() || '--/--/----';
 
-    const productSlots = [];
-    for (let i = 0; i < item.qty; i++) {
-      productSlots.push({ product, date });
-      totalDuns++;
-    }
-
-    // Group this product's DUNs in chunks of 3 per label sheet
-    for (let i = 0; i < productSlots.length; i += 3) {
-      pages.push(productSlots.slice(i, i + 3));
-    }
+    parsedItems.push({ product, date, qty: item.qty });
+    totalDuns += item.qty;
   });
+
+  const pages = [];
+
+  if (totalDuns > 9) {
+    // Separate label sheets per product when printing more than 9 DUNs
+    parsedItems.forEach(({ product, date, qty }) => {
+      const productSlots = [];
+      for (let i = 0; i < qty; i++) {
+        productSlots.push({ product, date });
+      }
+      for (let i = 0; i < productSlots.length; i += 3) {
+        pages.push(productSlots.slice(i, i + 3));
+      }
+    });
+  } else {
+    // Pack continuously in groups of 3 when total DUNs <= 9
+    const flatDuns = [];
+    parsedItems.forEach(({ product, date, qty }) => {
+      for (let i = 0; i < qty; i++) {
+        flatDuns.push({ product, date });
+      }
+    });
+    for (let i = 0; i < flatDuns.length; i += 3) {
+      pages.push(flatDuns.slice(i, i + 3));
+    }
+  }
 
   return { totalDuns, pages };
 }
