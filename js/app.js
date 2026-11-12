@@ -28,6 +28,7 @@ let queueItems = []; // Array of { uid, productId, date, qty }
 let itemCounter = 0;
 let currentPreviewPage = 0;
 let generatedLabelPages = [];
+let totalDunsCount = 0;
 let activeRenderEngine = 'vector';
 
 // Helper utilities
@@ -66,6 +67,7 @@ let dynamicItemsContainer, totalDunsBadge, labelCountBadge;
 let zplOutputTextarea, labelaryImg, labelaryContainer, labelaryLoading, labelaryError;
 let simulatedLabel, btnGenerate, printerSelect, printerStatusBadge, printerStatusDot, printerStatusText;
 let previewPageIndicator, btnPrevLabel, btnNextLabel;
+let printConfirmModal, modalTotalDuns, modalTotalLabels, modalPrinterName, btnConfirmPrint, btnCancelPrint;
 
 // Toast Notification Utility
 function showToast(message, type = 'info') {
@@ -164,7 +166,8 @@ function renderQueueItems() {
 
   queueItems.forEach((item, index) => {
     const card = document.createElement('div');
-    card.className = 'p-3 bg-slate-50 dark:bg-slate-900/60 rounded-xl border border-slate-200 dark:border-slate-700/70 space-y-2.5 transition-all';
+    card.dataset.uid = item.uid;
+    card.className = 'queue-item-card p-3 bg-slate-50 dark:bg-slate-900/60 rounded-xl border border-slate-200 dark:border-slate-700/70 space-y-2.5 transition-all';
 
     const optionsHtml = productsData.map(prod => {
       const selected = prod.id === item.productId ? 'selected' : '';
@@ -224,8 +227,17 @@ function renderQueueItems() {
 
     qtyEl.addEventListener('input', (e) => {
       const val = parseInt(e.target.value, 10);
-      item.qty = isNaN(val) || val < 1 ? 1 : val;
+      item.qty = (!isNaN(val) && val >= 1) ? val : 1;
       updateZPLAndPreview();
+    });
+
+    qtyEl.addEventListener('blur', (e) => {
+      const val = parseInt(e.target.value, 10);
+      if (isNaN(val) || val < 1) {
+        e.target.value = 1;
+        item.qty = 1;
+        updateZPLAndPreview();
+      }
     });
 
     if (removeBtn) {
@@ -236,14 +248,29 @@ function renderQueueItems() {
   });
 }
 
+// Always build the queue strictly following Producto 1 -> Producto 2 -> Producto N
 function buildLabelPages() {
   const flatDuns = [];
-  queueItems.forEach(item => {
+  const cards = dynamicItemsContainer.querySelectorAll('.queue-item-card');
+
+  cards.forEach(card => {
+    const uid = parseInt(card.dataset.uid, 10);
+    const item = queueItems.find(q => q.uid === uid);
+    if (!item) return;
+
+    const selectEl = card.querySelector('.item-product-select');
+    const dateEl = card.querySelector('.item-date-input');
+    const qtyEl = card.querySelector('.item-qty-input');
+
+    item.productId = selectEl.value;
+    item.date = dateEl.value;
+    const rawQty = parseInt(qtyEl.value, 10);
+    item.qty = (!isNaN(rawQty) && rawQty >= 1) ? rawQty : 1;
+
     const product = productsData.find(p => p.id === item.productId) || productsData[0];
     const date = item.date.trim() || '--/--/----';
-    const count = Math.max(1, parseInt(item.qty, 10) || 1);
 
-    for (let i = 0; i < count; i++) {
+    for (let i = 0; i < item.qty; i++) {
       flatDuns.push({ product, date });
     }
   });
@@ -428,6 +455,7 @@ function updateLabelaryPreview() {
 function updateZPLAndPreview() {
   const { flatDuns, pages } = buildLabelPages();
   generatedLabelPages = pages;
+  totalDunsCount = flatDuns.length;
 
   totalDunsBadge.textContent = `${flatDuns.length} DUN${flatDuns.length !== 1 ? 's' : ''}`;
   labelCountBadge.textContent = `${pages.length} etiqueta${pages.length !== 1 ? 's' : ''}`;
@@ -482,8 +510,29 @@ function checkDatesValidity() {
   return true;
 }
 
-function printDirectToZebra() {
+// Open confirmation modal before sending print command
+function openPrintConfirmationModal() {
+  updateZPLAndPreview();
   if (!checkDatesValidity()) return;
+
+  const totalLabels = generatedLabelPages.length;
+  const printerName = printerSelect.options[printerSelect.selectedIndex].text;
+
+  modalTotalDuns.textContent = `${totalDunsCount} DUN${totalDunsCount !== 1 ? 's' : ''}`;
+  modalTotalLabels.textContent = `${totalLabels} etiqueta${totalLabels !== 1 ? 's' : ''}`;
+  modalPrinterName.textContent = printerName;
+
+  printConfirmModal.classList.remove('hidden');
+  printConfirmModal.classList.add('flex');
+}
+
+function closePrintConfirmationModal() {
+  printConfirmModal.classList.add('hidden');
+  printConfirmModal.classList.remove('flex');
+}
+
+function executeDirectPrintToZebra() {
+  closePrintConfirmationModal();
 
   const zplData = generateFullZPLCode();
   const targetIP = printerSelect.value;
@@ -531,6 +580,14 @@ document.addEventListener('DOMContentLoaded', () => {
   btnPrevLabel = document.getElementById('btn-prev-label');
   btnNextLabel = document.getElementById('btn-next-label');
 
+  // Modal references
+  printConfirmModal = document.getElementById('print-confirm-modal');
+  modalTotalDuns = document.getElementById('modal-total-duns');
+  modalTotalLabels = document.getElementById('modal-total-labels');
+  modalPrinterName = document.getElementById('modal-printer-name');
+  btnConfirmPrint = document.getElementById('btn-confirm-print');
+  btnCancelPrint = document.getElementById('btn-cancel-print');
+
   // Add Item Button (Default date empty)
   document.getElementById('btn-add-item').addEventListener('click', () => {
     addQueueItem("10", "", 1);
@@ -557,8 +614,15 @@ document.addEventListener('DOMContentLoaded', () => {
   // Printer Selection Change
   printerSelect.addEventListener('change', checkPrinterConnection);
 
-  // Print Direct Button Event
-  btnGenerate.addEventListener('click', printDirectToZebra);
+  // Print Direct Button Event -> Opens Confirmation Modal
+  btnGenerate.addEventListener('click', openPrintConfirmationModal);
+
+  // Modal Buttons
+  btnConfirmPrint.addEventListener('click', executeDirectPrintToZebra);
+  btnCancelPrint.addEventListener('click', closePrintConfirmationModal);
+  printConfirmModal.addEventListener('click', (e) => {
+    if (e.target === printConfirmModal) closePrintConfirmationModal();
+  });
 
   // Copy ZPL Code Button
   document.getElementById('btn-copy-zpl').addEventListener('click', () => {
