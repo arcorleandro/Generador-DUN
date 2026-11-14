@@ -4,6 +4,16 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Generador DUN DoyPack</title>
+
+  <!-- PWA -->
+  <link rel="manifest" href="./manifest.json">
+  <meta name="theme-color" content="#0265d2">
+  <meta name="application-name" content="DUN DoyPack">
+  <meta name="mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-title" content="DUN DoyPack">
+  <link rel="icon" type="image/png" sizes="192x192" href="./icon-192.png">
+  <link rel="apple-touch-icon" href="./apple-touch-icon.png">
   <!-- Tailwind CSS -->
   <script src="https://cdn.tailwindcss.com"></script>
   
@@ -17,7 +27,7 @@
   <script src="https://cdn.jsdelivr.net/npm/jsbarcode@3.11.5/dist/JsBarcode.all.min.js"></script>
 
   <!-- Custom Stylesheet Link -->
-  <link rel="stylesheet" href="./styles/style.css">
+  <link rel="stylesheet" href="./style.css">
 
   <script>
     tailwind.config = {
@@ -96,7 +106,7 @@
           <i class="fa-solid font-bold fa-barcode text-xl"></i>
         </div>
         <div>
-          <h1 class="font-bold text-lg leading-tight text-slate-900 dark:text-white">Generador DUN para DoyPack (by L.Lohay)</h1>
+          <h1 class="font-bold text-lg leading-tight text-slate-900 dark:text-white">Generador DUN para DoyPack v2.0 (by L.Lohay)</h1>
           <p class="text-xs text-slate-500 dark:text-slate-400">DUN Salsas - Control de Etiquetado Industrial</p>
         </div>
       </div>
@@ -170,7 +180,7 @@
 
         <!-- Main Action Button to Print Direct -->
         <button id="btn-generate" class="w-full py-3.5 px-4 bg-emerald-600 hover:bg-emerald-700 text-white font-bold text-sm rounded-xl shadow-md hover:shadow-lg transition transform active:scale-[0.99] flex items-center justify-center gap-2">
-          <i class="fa-solid fa-print text-lg"></i> IMPRIMIR ETIQUETAS DIRECTO
+          <i class="fa-solid fa-print text-lg"></i> IMPRIMIR ETIQUETA
         </button>
       </div>
 
@@ -354,6 +364,15 @@
   </main>
 
   <!-- External JavaScript Link -->
-  <script src="./js/app.js"></script>
+  <script src="./app.js"></script>
+
+  <!-- Registro del Service Worker (PWA) -->
+  <script>
+    if ('serviceWorker' in navigator) {
+      window.addEventListener('load', () => {
+        navigator.serviceWorker.register('./sw.js').catch(err => console.warn('SW no registrado:', err));
+      });
+    }
+  </script>
 </body>
 </html>
